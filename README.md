@@ -4,6 +4,8 @@
 
 Search GitHub issues by skill, filter by difficulty, and find your first open-source contribution.
 
+![oss-finder-demo](screenshots/oss-finder-demo.png)
+
 ## Features
 - Search GitHub issues by skill keywords
 - Filter by language and difficulty
