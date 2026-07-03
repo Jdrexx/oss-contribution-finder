@@ -16,9 +16,7 @@ def db() -> sqlite3.Connection:
     conn=sqlite3.connect(DB_FILE); conn.row_factory=sqlite3.Row; conn.execute('pragma journal_mode=wal'); return conn
 def init_db() -> None:
     with db() as conn: conn.execute('create table if not exists records (id integer primary key autoincrement, kind text not null, title text not null, payload text not null, created_at text not null)')
-@app.on_event("startup")
-def on_startup() -> None:
-    init_db()
+init_db()
 def save_record(kind: str, title: str, payload: str) -> int:
     with db() as conn:
         cur=conn.execute('insert into records(kind,title,payload,created_at) values (?,?,?,?)',(kind,title,payload,datetime.now(timezone.utc).isoformat())); return int(cur.lastrowid)
@@ -54,7 +52,7 @@ def search_issues(req: SearchRequest):
         data = json.loads(resp.read().decode())
         results=[]
         for item in data.get('items',[])[:10]:
-            diff = estimate_difficulty(item.get('body',''), item.get('title',''))
+            diff = estimate_difficulty(item.get('body') or '', item.get('title') or '')
             if req.difficulty != 'any' and diff != req.difficulty: continue
             results.append({"title": item['title'], "repo": item['repository_url'].split('/')[-1], "url": item['html_url'], "difficulty": diff, "estimate": estimate_time(diff), "created": item.get('created_at','')[:10], "score": item.get('score',0)})
         save_record('search', req.skills, json.dumps({"query": req.skills, "results": results}))
