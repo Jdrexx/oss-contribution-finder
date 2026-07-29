@@ -6,7 +6,7 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 APP_NAME='Open Source Contribution Finder'
 DB_FILE=Path(__file__).resolve().parent.parent/'data'/'app.sqlite'
 DB_FILE.parent.mkdir(exist_ok=True)
@@ -29,11 +29,26 @@ def health(): return {'ok': True, 'app': APP_NAME, 'records': len(rows())}
 @app.get('/', response_class=HTMLResponse)
 def home(): return INDEX_HTML
 
-from urllib.parse import quote
+from urllib.parse import urlencode
 class SearchRequest(BaseModel):
-    skills: str
-    language: str = ""
+    skills: str = Field(..., min_length=1, max_length=200)
+    language: str = Field(default="", max_length=40)
     difficulty: str = "any"
+
+    @field_validator("language")
+    @classmethod
+    def validate_language(cls, value: str) -> str:
+        language = value.strip()
+        if language and not all(character.isalnum() or character in "+#.-" for character in language):
+            raise ValueError("language contains unsupported characters")
+        return language
+
+    @field_validator("difficulty")
+    @classmethod
+    def validate_difficulty(cls, value: str) -> str:
+        if value not in {"any", "easy", "medium", "hard"}:
+            raise ValueError("difficulty must be any, easy, medium, or hard")
+        return value
 def estimate_difficulty(body: str, title: str) -> str:
     t = (body + " " + title).lower()
     if any(w in t for w in ['easy','good first','beginner','simple']): return 'easy'
@@ -44,12 +59,19 @@ def estimate_time(difficulty: str) -> str:
 @app.post('/api/search')
 def search_issues(req: SearchRequest):
     import urllib.request
-    q = quote(req.skills)
-    lang = f"+language:{req.language}" if req.language else ""
-    url = f"https://api.github.com/search/issues?q={q}{lang}+label:good-first-issue+state:open&sort=updated&per_page=12"
+    qualifiers = [req.skills, "label:good-first-issue", "state:open"]
+    if req.language:
+        qualifiers.append(f"language:{req.language}")
+    query = urlencode({"q": " ".join(qualifiers), "sort": "updated", "per_page": 12})
+    url = f"https://api.github.com/search/issues?{query}"
     try:
-        resp = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent":"oss-finder/0.1","Accept":"application/vnd.github.v3+json"}), timeout=15)
-        data = json.loads(resp.read().decode())
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent":"oss-finder/0.1","Accept":"application/vnd.github.v3+json"},
+        )
+        # The request target is assembled from a fixed HTTPS origin.
+        with urllib.request.urlopen(request, timeout=15) as response:  # nosec B310
+            data = json.loads(response.read().decode())
         results=[]
         for item in data.get('items',[])[:10]:
             diff = estimate_difficulty(item.get('body') or '', item.get('title') or '')
@@ -57,8 +79,8 @@ def search_issues(req: SearchRequest):
             results.append({"title": item['title'], "repo": item['repository_url'].split('/')[-1], "url": item['html_url'], "difficulty": diff, "estimate": estimate_time(diff), "created": item.get('created_at','')[:10], "score": item.get('score',0)})
         save_record('search', req.skills, json.dumps({"query": req.skills, "results": results}))
         return {"count": len(results), "results": results}
-    except Exception as e:
-        return {"count": 0, "results": [], "error": str(e), "note": "GitHub API call failed; try again later."}
+    except Exception:
+        return {"count": 0, "results": [], "error": "upstream request failed", "note": "GitHub API call failed; try again later."}
 @app.get('/api/bookmarks')
 def bookmarks():
     return {"bookmarks": [json.loads(r['payload']) | {'id':r['id'],'created_at':r['created_at']} for r in rows('search')]}
